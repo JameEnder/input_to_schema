@@ -1,6 +1,4 @@
-#!/usr/bin/env node
-
-import ts, { TypeFlags } from 'typescript'
+import ts from 'typescript'
 import * as arktype from 'arktype'
 import * as fs from 'fs'
 import * as path from 'path'
@@ -25,7 +23,9 @@ type ObjectSchema = {
 	editor: 'textfield'
 	default?: Object
 	prefill?: Object
-} & Schema
+	properties: Record<string, SchemaProperty>
+	required: string[]
+}
 
 type EnumSchema = {
 	type: 'enum'
@@ -42,76 +42,65 @@ type BooleanSchema = {
 	prefill?: boolean
 }
 
-type SchemaProperty = { title: string; description: string; required: boolean } & (
+type ArraySchema = {
+	type: 'array'
+	editor: 'textfield'
+	default?: any[]
+	prefill?: any[]
+}
+
+type SchemaProperty = { title: string; description: string } & (
 	| NumberSchema
 	| BooleanSchema
 	| StringSchema
 	| ObjectSchema
 	| EnumSchema
+	| ArraySchema
 )
 
-type Schema = {
-	properties: Record<string, Omit<SchemaProperty, 'required'>>
-	required: string[]
-}
-
-function omit<T extends Object, const Keys extends string[]>(
-	object: T,
-	keys: Keys
-): Omit<T, (typeof keys)[number]> {
-	const omited = JSON.parse(JSON.stringify(object))
-
-	for (const key of keys) {
-		delete omited[key]
-	}
-
-	return omited
-}
-
-function convertSchemaPropertiesToSchema(properties: Record<string, SchemaProperty>): Schema {
-	const required = Object.entries(properties)
-		.filter(([_, value]) => value.required)
-		.map(([key, _]) => key)
-
-	const omitedProperties: Record<string, Omit<SchemaProperty, 'required'>> = {}
-
-	for (const key in properties) {
-		const property = properties[key]
-
-		if (property.type == 'object') {
-			const schema = convertSchemaPropertiesToSchema(property.properties as any)
-
-			;(property as ObjectSchema).properties = schema.properties
-			;(property as ObjectSchema).required = schema.required
-			omitedProperties[key] = property
-		} else {
-			omitedProperties[key] = omit(property, ['required'])
-		}
-	}
-
-	return { properties: omitedProperties, required }
-}
-
-function convertInputIntoSchema(checker: ts.TypeChecker, node: ts.Node): Schema {
+function convertInputIntoSchema(
+	checker: ts.TypeChecker,
+	node: ts.Node
+): Omit<SchemaProperty, 'editor'> {
 	const type = checker.getTypeAtLocation(node)
 
-	const properties = convertObjectToSchema(checker, type as ts.InterfaceType, [])
-	const schema = convertSchemaPropertiesToSchema(properties)
+	const schema = convertObjectToSchema(checker, type as ts.InterfaceType, {} as any, [])
+
+	//@ts-ignore
+	delete schema['editor']
 
 	return schema
 }
 
-function convertUnionIntoEnum(checker: ts.TypeChecker, union: ts.UnionType) {
-	return union.types.map((type) => checker.typeToString(type).replace(/"/g, ''))
-}
+// function convertUnionIntoEnum(checker: ts.TypeChecker, union: ts.UnionType) {
+// 	return union.types.map((type) => checker.typeToString(type).replace(/"/g, ''))
+// }
 
 function convertEnumlikeIntoEnum(checker: ts.TypeChecker, enumlike: ts.EnumType) {
 	// @ts-ignore
 	return enumlike.types.map((type: ts.Type) => type.value)
 }
 
+function convertEnumlikeIntoSchema(
+	checker: ts.TypeChecker,
+	enumlike: ts.EnumType,
+	doc: Omit<SchemaProperty, 'type'>
+): SchemaProperty {
+	return {
+		type: 'enum',
+		editor: 'select',
+		title: doc.title,
+		description: doc.description,
+		default: doc.default,
+		prefill: doc.prefill,
+		enum: convertEnumlikeIntoEnum(checker, enumlike),
+	}
+}
 
-function convertObjectToSchema(checker: ts.TypeChecker, type: ts.Type, interfacePath: string[]) {
+function convertJSDocToSchema(
+	checker: ts.TypeChecker,
+	symbol: ts.Symbol
+): Omit<SchemaProperty, 'type'> {
 	const JSDocInfoValidator = arktype.type({
 		'name?': 'string',
 		'description?': 'string',
@@ -120,146 +109,158 @@ function convertObjectToSchema(checker: ts.TypeChecker, type: ts.Type, interface
 		'prefill?': 'string',
 	})
 
-	type JSDocInfoSchema = typeof JSDocInfoValidator.infer
+	const jsDoc = symbol.getJsDocTags(checker)
+	const collectedJsDoc: Record<string, string> = {}
 
-	const EDITOR_TYPE_MAP = {
-		string: 'textfield',
-		number: 'number',
-		object: 'textfield',
-		enum: 'select',
-		boolean: 'checkmark',
-	} as const
+	for (const tag of jsDoc) {
+		collectedJsDoc[tag.name] = tag.text![0].text.replace(/"/g, '')
+	}
 
-	const properties = type.getApparentProperties()
+	const { data: validatedJsDoc, problems } = JSDocInfoValidator(collectedJsDoc)
+
+	if (problems) {
+		console.warn(problems)
+	}
+
+	return {
+		title: validatedJsDoc?.name || '',
+		description: validatedJsDoc?.description || '',
+		editor: (validatedJsDoc?.editor as any) || 'textfield',
+		default: validatedJsDoc?.default,
+		prefill: validatedJsDoc?.prefill,
+	}
+}
+
+function convertPrimitiveToSchema(
+	checker: ts.TypeChecker,
+	type: ts.Type,
+	doc: Omit<SchemaProperty, 'type'>
+): SchemaProperty {
+	if (type.flags & ts.TypeFlags.String) {
+		return {
+			...doc,
+			type: 'string',
+			editor: 'textfield',
+			default: doc.default && String(doc.default),
+			prefill: doc.prefill && String(doc.prefill),
+		}
+	} else if (type.flags & ts.TypeFlags.Number) {
+		return {
+			...doc,
+			type: 'number',
+			editor: 'number',
+			default: doc.default && parseFloat(doc.default),
+			prefill: doc.prefill && parseFloat(doc.prefill),
+		}
+	} else if (type.flags & ts.TypeFlags.Boolean) {
+		return {
+			...doc,
+			type: 'boolean',
+			editor: 'checkmark',
+			default: doc.default && Boolean(doc.default),
+			prefill: doc.prefill && Boolean(doc.prefill),
+		}
+	} else {
+		return {
+			...doc,
+			type: 'string',
+			editor: 'textfield',
+		}
+	}
+}
+
+function convertArrayToSchema(checker: ts.TypeChecker,
+	array: ts.ObjectType,
+	doc: Omit<SchemaProperty, 'type'>,
+): SchemaProperty {
+	doc.default = doc.default && JSON.parse(
+		doc.default
+			.replace(/'/g, "\"")
+	)
+
+	return {
+		...doc,
+		type: 'array',
+		editor: 'textfield',
+	}
+}
+
+function convertObjectToSchema(
+	checker: ts.TypeChecker,
+	object: ts.ObjectType,
+	doc: Omit<SchemaProperty, 'type'>,
+	propertyPath: string[]
+): SchemaProperty {
+	if (checker.isArrayType(object)) return convertArrayToSchema(checker, object, doc)
+
+
 	const schema: Record<string, SchemaProperty> = {}
+	const required: string[] = []
+
+	const properties = object.getProperties()
 
 	for (const property of properties) {
-		const propertySchema: SchemaProperty = {} as SchemaProperty
-		const propertyPath = [...interfacePath, property.name].join('.')
+		const propertyDoc = convertJSDocToSchema(checker, property)
 
-		const jsDoc = property.getJsDocTags(checker)
-		const collectedJsDoc: Record<string, string> = {}
-
-		for (const tag of jsDoc) {
-			collectedJsDoc[tag.name] = tag.text![0].text.replace(/"/g, '')
+		if (property.name === "urlsDefault") {
+			
+			// @ts-ignore
+			console.log(checker.getTypeOfSymbol(property))
 		}
 
-		const { data: validatedJsDoc, problems } = JSDocInfoValidator(collectedJsDoc)
+		const propertySchema = convertTypeToSchema(checker, checker.getTypeOfSymbol(property), propertyDoc, [...propertyPath, property.name])
 
-		if (problems) {
-			console.warn(problems)
-		}
-
-		if (validatedJsDoc) {
-			propertySchema.title = validatedJsDoc.name || ''
-			propertySchema.description = validatedJsDoc.description || ''
-			propertySchema.editor =
-				(validatedJsDoc.editor as SchemaProperty['editor']) || 'textfield'
-			propertySchema.default = validatedJsDoc.default
-			propertySchema.prefill = validatedJsDoc.prefill
-		}
-
-		const propertyType = checker.getTypeOfSymbol(property)
-
-		if (
-			propertyType.isClassOrInterface() ||
-			(propertyType.flags & TypeFlags.Object &&
-				!(propertyType.flags & ts.TypeFlags.Enum) &&
-				!(propertyType.flags & ts.TypeFlags.EnumLiteral)) &&
-				!(propertyType.flags & ts.TypeFlags.Union && !(propertyType.flags & ts.TypeFlags.Boolean))
-		) {
-			propertySchema.type = 'object'
-		} else if (
-			propertyType.flags & ts.TypeFlags.Enum ||
-			propertyType.flags & ts.TypeFlags.EnumLiteral ||
-			(propertyType.flags & ts.TypeFlags.Union && !(propertyType.flags & ts.TypeFlags.Boolean))
-		) {
-			propertySchema.type = 'enum'
-		} else {
-			propertySchema.type = checker.typeToString(propertyType) as any
-		}
-
-		switch (propertySchema.type) {
-			case 'object':
-				propertySchema.properties = convertObjectToSchema(checker, propertyType as any, [
-					...interfacePath,
-					property.name,
-				])
-
-				if (propertySchema.default) {
-					const treated = propertySchema.default as string
-					const parsedJSON = JSON.parse(
-						treated
-							.replace(/(?:['"])?([a-z0-9A-Z_]+)(?:['"])?:/g, '"$1": ')
-							.replace(/:\s*?(?:'([^']*)')/g, ': "$1"')
-							.replace(
-								/\s*"[^"]*":\s*[^(,[\]{}]*\([^()]*(?:\([^()]*\)[^()]*)*\)\s*,?/g,
-								''
-							)
-					)
-
-					const parsed = arktype.type(propertySchema.properties)(parsedJSON)
-
-					if (parsed.problems) {
-						console.warn(
-							`Default value '${
-								propertySchema.default
-							}' for '${propertyPath}' does not match schema of ${JSON.stringify(
-								propertySchema.properties
-							)} because of ${parsed.problems}`
-						)
-					}
-
-					propertySchema.default = parsed.data as Object | undefined
-				}
-
-				break
-			case 'enum':
-				propertySchema.enum = convertEnumlikeIntoEnum(checker, propertyType as ts.EnumType)
-
-				if (
-					propertySchema.default &&
-					!propertySchema.enum.includes(propertySchema.default)
-				) {
-					console.warn(
-						`Default value '${
-							propertySchema.default
-						}' for '${propertyPath}' does not match enum of ${JSON.stringify(
-							propertySchema.enum
-						)}`
-					)
-				}
-				break
-			case 'number':
-				propertySchema.default &&= Number(propertySchema.default)
-				propertySchema.prefill &&= Number(propertySchema.prefill)
-				break
-			case 'boolean':
-				propertySchema.default &&= Boolean(propertySchema.default)
-				propertySchema.prefill &&= Boolean(propertySchema.prefill)
-				break
-		}
-
-		propertySchema.editor = EDITOR_TYPE_MAP[propertySchema.type] || 'textfield'
-		propertySchema.required = (property.flags & ts.SymbolFlags.Optional) === 0
-
-		if (!propertySchema.required && propertySchema.default !== undefined) {
-			console.warn(`Missing default for required '${propertyPath}'`)
-		}
-
-		if (propertySchema.title === '') {
-			console.warn(`Missing title for '${propertyPath}'`)
-			propertySchema.title = property.name
-		}
-
-		if (propertySchema.description === '') {
-			console.warn(`Missing description for '${propertyPath}'`)
+		if (property.flags & ts.SymbolFlags.Optional || propertySchema.default === undefined) {
+			required.push(property.name)
 		}
 
 		schema[property.name] = propertySchema
 	}
 
-	return schema
+	doc.default = doc.default && JSON.parse(
+		doc.default
+			.replace(/(?:['"])?([a-z0-9A-Z_]+)(?:['"])?:/g, '"$1": ')
+			.replace(/:\s*?(?:'([^']*)')/g, ': "$1"')
+			.replace(
+				/\s*"[^"]*":\s*[^(,[\]{}]*\([^()]*(?:\([^()]*\)[^()]*)*\)\s*,?/g,
+				''
+			)
+	)
+
+	return {
+		...doc,
+		type: 'object',
+		editor: 'textfield',
+		properties: schema,
+		required,
+	}
+}
+
+function convertTypeToSchema(
+	checker: ts.TypeChecker,
+	type: ts.Type,
+	doc: Omit<SchemaProperty, 'type'>,
+	propertyPath: string[]
+): SchemaProperty {
+	if (
+		type.flags & ts.TypeFlags.Enum ||
+		type.flags & ts.TypeFlags.EnumLike ||
+		type.flags & ts.TypeFlags.EnumLiteral ||
+		(type.flags & ts.TypeFlags.Union && !(type.flags & ts.TypeFlags.Boolean))
+	) {
+		return convertEnumlikeIntoSchema(checker, type as ts.EnumType, doc)
+	}
+
+
+	if (type.flags & ts.TypeFlags.Object) {
+		return convertObjectToSchema(checker, type as ts.ObjectType, doc, propertyPath)
+	}
+
+	if (!(type.flags & ts.TypeFlags.NonPrimitive)) {
+		return convertPrimitiveToSchema(checker, type as ts.Type, doc)
+	}
+
+	process.exit(1)
 }
 
 function getSchemaFromSourcePath(sourcePath: string) {
