@@ -169,14 +169,12 @@ function convertPrimitiveToSchema(
 	}
 }
 
-function convertArrayToSchema(checker: ts.TypeChecker,
+function convertArrayToSchema(
+	checker: ts.TypeChecker,
 	array: ts.ObjectType,
-	doc: Omit<SchemaProperty, 'type'>,
+	doc: Omit<SchemaProperty, 'type'>
 ): SchemaProperty {
-	doc.default = doc.default && JSON.parse(
-		doc.default
-			.replace(/'/g, "\"")
-	)
+	doc.default = doc.default && JSON.parse(doc.default.replace(/'/g, '"'))
 
 	return {
 		...doc,
@@ -193,7 +191,6 @@ function convertObjectToSchema(
 ): SchemaProperty {
 	if (checker.isArrayType(object)) return convertArrayToSchema(checker, object, doc)
 
-
 	const schema: Record<string, SchemaProperty> = {}
 	const required: string[] = []
 
@@ -202,30 +199,30 @@ function convertObjectToSchema(
 	for (const property of properties) {
 		const propertyDoc = convertJSDocToSchema(checker, property)
 
-		if (property.name === "urlsDefault") {
-			
-			// @ts-ignore
-			console.log(checker.getTypeOfSymbol(property))
-		}
+		const propertySchema = convertTypeToSchema(
+			checker,
+			checker.getTypeOfSymbol(property),
+			propertyDoc,
+			[...propertyPath, property.name]
+		)
 
-		const propertySchema = convertTypeToSchema(checker, checker.getTypeOfSymbol(property), propertyDoc, [...propertyPath, property.name])
-
-		if (property.flags & ts.SymbolFlags.Optional || propertySchema.default === undefined) {
+		if (
+			!(property.flags & ts.SymbolFlags.Optional) && propertySchema.default === undefined
+		) {
 			required.push(property.name)
 		}
 
 		schema[property.name] = propertySchema
 	}
 
-	doc.default = doc.default && JSON.parse(
-		doc.default
-			.replace(/(?:['"])?([a-z0-9A-Z_]+)(?:['"])?:/g, '"$1": ')
-			.replace(/:\s*?(?:'([^']*)')/g, ': "$1"')
-			.replace(
-				/\s*"[^"]*":\s*[^(,[\]{}]*\([^()]*(?:\([^()]*\)[^()]*)*\)\s*,?/g,
-				''
-			)
-	)
+	doc.default =
+		doc.default &&
+		JSON.parse(
+			doc.default
+				.replace(/(?:['"])?([a-z0-9A-Z_]+)(?:['"])?:/g, '"$1": ')
+				.replace(/:\s*?(?:'([^']*)')/g, ': "$1"')
+				.replace(/\s*"[^"]*":\s*[^(,[\]{}]*\([^()]*(?:\([^()]*\)[^()]*)*\)\s*,?/g, '')
+		)
 
 	return {
 		...doc,
@@ -250,7 +247,6 @@ function convertTypeToSchema(
 	) {
 		return convertEnumlikeIntoSchema(checker, type as ts.EnumType, doc)
 	}
-
 
 	if (type.flags & ts.TypeFlags.Object) {
 		return convertObjectToSchema(checker, type as ts.ObjectType, doc, propertyPath)
