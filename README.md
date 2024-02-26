@@ -25,6 +25,34 @@ const {
 } = (await Actor.getInput<Input>())!
 ```
 
+Result:
+```json
+{
+    "type": "object",
+    "properties": {
+        "name": {
+            "title": "Name",
+            "description": "Name of the Account",
+            "editor": "textfield",
+            "prefill": "John",
+            "type": "string"
+        },
+        "role": {
+            "type": "string",
+            "editor": "select",
+            "title": "Role",
+            "description": "Role of the account",
+            "default": "admin",
+            "enum": [
+                "admin",
+                "normal"
+            ]
+        }
+    },
+    "required": []
+}
+```
+
 ## Usage
 ```sh
 tsx ./index.ts print <folder_with_main.ts>

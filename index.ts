@@ -327,6 +327,12 @@ function getSchemaFromSourcePath(sourcePath: string, typeName?: string) {
 	}
 
 
+	for (const [k, v] of Object.entries(objectSchema.properties)) {
+		if (v.prefill) {
+			objectSchema.required = objectSchema.required.filter(p => p !== k)
+		}
+	}
+
 	return schema;
 }
 
