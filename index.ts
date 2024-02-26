@@ -2,7 +2,21 @@ import ts from 'typescript'
 import * as arktype from 'arktype'
 import * as fs from 'fs'
 import * as path from 'path'
-import lesy from '@lesy/compiler'
+import { program } from 'commander';
+
+const findSyntaxKind = (statement: ts.Node, kind: ts.SyntaxKind): ts.Node | undefined => {
+	if (statement.kind === kind) {
+		return statement;
+	}
+
+	for (const child of statement.getChildren()) {
+		const found = findSyntaxKind(child, kind)
+
+		if (found) return found
+	}
+
+	return undefined
+}
 
 type NumberSchema = {
 	type: 'number'
@@ -28,7 +42,7 @@ type ObjectSchema = {
 }
 
 type EnumSchema = {
-	type: 'enum'
+	type: ObjectSchema["type"] | BooleanSchema["type"] | ArraySchema["type"] | StringSchema["type"] | NumberSchema["type"]
 	editor: 'select'
 	enum: any[]
 	default?: any
@@ -72,10 +86,6 @@ function convertInputIntoSchema(
 	return schema
 }
 
-// function convertUnionIntoEnum(checker: ts.TypeChecker, union: ts.UnionType) {
-// 	return union.types.map((type) => checker.typeToString(type).replace(/"/g, ''))
-// }
-
 function convertEnumlikeIntoEnum(checker: ts.TypeChecker, enumlike: ts.EnumType) {
 	// @ts-ignore
 	return enumlike.types.map((type: ts.Type) => type.value)
@@ -86,15 +96,18 @@ function convertEnumlikeIntoSchema(
 	enumlike: ts.EnumType,
 	doc: Omit<SchemaProperty, 'type'>
 ): SchemaProperty {
-	return {
-		type: 'enum',
-		editor: 'select',
+	const schema = {
+		// TODO: actual type inference
+		type: 'string' as const,
+		editor: 'select' as const,
 		title: doc.title,
 		description: doc.description,
 		default: doc.default,
 		prefill: doc.prefill,
 		enum: convertEnumlikeIntoEnum(checker, enumlike),
 	}
+
+	return schema
 }
 
 function convertJSDocToSchema(
@@ -113,7 +126,9 @@ function convertJSDocToSchema(
 	const collectedJsDoc: Record<string, string> = {}
 
 	for (const tag of jsDoc) {
-		collectedJsDoc[tag.name] = tag.text![0].text.replace(/"/g, '')
+		if (tag.text) {
+			collectedJsDoc[tag.name] = tag.text![0].text.replace(/"/g, '')
+		}
 	}
 
 	const { data: validatedJsDoc, problems } = JSDocInfoValidator(collectedJsDoc)
@@ -259,12 +274,12 @@ function convertTypeToSchema(
 	process.exit(1)
 }
 
-function getSchemaFromSourcePath(sourcePath: string) {
+function loadProgram(sourcePath: string): { program: ts.Program, sourceFile: ts.SourceFile } {
 	const files = fs.readdirSync(sourcePath).map((file) => path.join(sourcePath, file))
 	const mainFilePath = files.find((file) => file.includes('main'))
 
 	if (!mainFilePath) {
-		console.error("Couldn't find any main.ts file.")
+		console.error(`Couldn't find any main.ts file in '${sourcePath}'.`)
 		process.exit(1)
 	}
 
@@ -277,55 +292,86 @@ function getSchemaFromSourcePath(sourcePath: string) {
 		process.exit(1)
 	}
 
-	const checker = program.getTypeChecker()
-
-	let inputSymbol: ts.Symbol | undefined
-
-	for (const statement of sourceFile.statements) {
-		statement.forEachChild((node) => {
-			const actualNode = checker.getSymbolAtLocation(node)
-			if (
-				actualNode?.name === 'Input' &&
-				actualNode.declarations &&
-				actualNode.declarations.length > 0
-			) {
-				inputSymbol = actualNode
-			}
-		})
-
-		if (inputSymbol) break
-	}
-
-	if (!inputSymbol) {
-		console.error("No 'Input' interface found in the supplied file.")
-		process.exit(1)
-	}
-
-	if (!inputSymbol.declarations || inputSymbol.declarations.length == 0) {
-		console.error("No 'Input' interface definition found in the supplied file.")
-		process.exit(1)
-	}
-
-	const inputNode = inputSymbol.declarations[0]
-
-	return convertInputIntoSchema(checker, inputNode)
+	return { program, sourceFile };
 }
 
-const PrintCommand = {
-	name: 'print',
-	description: 'Print the Input schema to terminal',
-	args: { source: { type: 'string', required: true } },
+function getSchemaFromSourcePath(sourcePath: string, typeName?: string) {
+	const { program, sourceFile } = loadProgram(sourcePath);
 
-	run: (ctx: any) => {
-		const schema = getSchemaFromSourcePath(ctx.args.source)
+	const checker = program.getTypeChecker()
+
+	const { inputType, inputDefaults } = getDefaultsFromInputAssign(checker, sourceFile, typeName);
+
+	const inputNode = inputType?.symbol?.declarations?.[0]
+
+	if (!inputNode) {
+		console.error(`No '${typeName}' type found in the supplied file.`);
+		process.exit(1);
+	}
+
+	const schema = convertInputIntoSchema(checker, inputNode!)
+
+	if (!inputDefaults) {
+		console.warn(`No defaults found for '${typeName}'`);
+		return;
+	}
+
+	const objectSchema = (schema as any as ObjectSchema)
+	for (const d of inputDefaults) {
+		const property = objectSchema.properties[d.name.getText()]
+
+		// This will surely not be a concern *clueless*
+		property.default = eval(d.initializer?.getText()!);
+		
+		objectSchema.required = objectSchema.required.filter(p => p != d.name.getText())
+	}
+
+
+	return schema;
+}
+
+function getDefaultsFromInputAssign(checker: ts.TypeChecker, sourceFile: ts.SourceFile, typeName?: string) {
+	let inputType: ts.Type | undefined;
+	let inputDefaults: ts.BindingElement[] | undefined;
+	
+	for (const child of sourceFile.statements) {
+		const resultVD = findSyntaxKind(child, ts.SyntaxKind.VariableDeclaration);
+
+		if (!resultVD) continue
+		
+		const initializer = (resultVD as ts.VariableDeclaration).initializer
+
+		if (!initializer) continue
+
+		const type = checker.getTypeAtLocation(initializer);
+
+		if (type.aliasSymbol?.getName() !== typeName && type.symbol.escapedName !== typeName) continue;
+		
+		const defaults = findSyntaxKind(child, ts.SyntaxKind.ObjectBindingPattern);
+		if (!defaults) continue;
+	
+		inputType = type
+		inputDefaults = (defaults as ts.ObjectBindingPattern).elements.filter(element => element.initializer);
+	
+		break;
+	}
+
+	return { inputType, inputDefaults }
+	
+}
+
+program
+	.command("print")
+	.argument("<source>")
+	.option('--typeName <name>', 'custom Input type name', 'Input')
+	.action((source, options) => {
+		const schema = getSchemaFromSourcePath(source, options.typeName)
 
 		const json = JSON.stringify(schema, undefined, 4)
 
 		console.log(json)
-	},
-}
+	})
 
-const commands = [PrintCommand]
+program.parse()
 
-// @ts-ignore
-lesy({ commands }).parse()
+

@@ -15,14 +15,24 @@ interface Input {
   /**
   * @name Role
   * @description Role of the account
-  * @default "normal"
   */
   role: 'admin' | 'normal'
 }
+
+const {
+  // It can do defaults like so!
+  role = 'admin'
+} = (await Actor.getInput<Input>())!
 ```
 
 ## Usage
 ```sh
 tsx ./index.ts print <folder_with_main.ts>
+```
+
+Or you can get help with
+
+```sh
+tsx ./index.ts help print
 ```
 
