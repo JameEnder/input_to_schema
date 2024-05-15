@@ -10,16 +10,10 @@ const findSyntaxKind = (statement: ts.Node, kind: ts.SyntaxKind): ts.Node | unde
         return statement;
     }
 
-    for (const child of statement.getChildren()) {
-        const found = findSyntaxKind(child, kind);
-
-        if (found) return found;
-    }
-
-    return undefined;
+    return statement.getChildren().find((child) => findSyntaxKind(child, kind))
 };
 
-const JSDOC_PROPS_TO_EVAL = ["default", "prefill", "minimum", "maximum", "enumTitles", "schemaVersion"]
+const JSDOC_PROPS_TO_EVAL = ["default", "prefill", "minimum", "maximum", "enumTitles", "schemaVersion", "required"]
 
 function getJsDocFromNode(checker: ts.TypeChecker, rawNode: ts.Node) {
     const output: Record<string, any> = {};
@@ -40,7 +34,7 @@ function getJsDocFromNode(checker: ts.TypeChecker, rawNode: ts.Node) {
                 output[name] = eval(output[name])
             } catch (e) {
                 console.error(name, "with value", JSON.stringify(output[name]), "couldnt be evaluated because", e)
-                // process.exit(1)
+                process.exit(1)
             }
         }
     }
@@ -153,7 +147,8 @@ function convertJSDocToSchema(
         'prefill?': 'string | string[]',
         'enumTitles?': 'string[]',
         'sectionCaption?': 'string',
-        'sectionDescription?': 'string'
+        'sectionDescription?': 'string',
+        'required?': 'string' 
     });
 
     const jsDoc = symbol.getJsDocTags(checker);
@@ -246,7 +241,8 @@ function convertObjectToSchema(
 
 
         if (
-            !(property.flags & ts.SymbolFlags.Optional) && propertySchema.default === undefined && propertySchema.editor !== 'hidden' && propertySchema.required
+            // !(property.flags & ts.SymbolFlags.Optional) && propertySchema.default === undefined && propertySchema.editor !== 'hidden' && propertySchema.required
+            propertySchema.required
         ) {
             required.push(property.name);
         }
@@ -289,37 +285,45 @@ function convertTypeToSchema(
     process.exit(1);
 }
 
-export function convertJsDoccableToString(value: SchemaProperty, level: number = 0) {
+export function convertJsDoccableToString(value: SchemaProperty, required: boolean, level = 0) {
     const padding = '\t'.repeat(level);
-        let output = '';
-        output += `${padding}/**\n`;
+    let output = '';
+    output += `${padding}/**\n`;
 
-        for (const [jsDoccableName, jsDoccableValue] of Object.entries(value)) {
-            if (jsDoccableName === 'type') continue;
-            if (jsDoccableName === 'enum') continue;
-            if (jsDoccableName === 'required') continue;
-            if (jsDoccableName === 'properties') continue;
-            if (jsDoccableValue === '') continue;
+    for (const [jsDoccableName, jsDoccableValue] of Object.entries(value)) {
+        if (jsDoccableName === 'type') continue;
+        if (jsDoccableName === 'enum') continue;
+        if (jsDoccableName === 'properties') continue;
+        if (jsDoccableName !== 'required' && jsDoccableValue === '') continue;
 
-            let formattedValue = jsDoccableValue;
+        let formattedValue = jsDoccableValue;
 
-            if (JSDOC_PROPS_TO_EVAL.includes(jsDoccableName)) {
-                if (value.type === 'string' && ["default", "prefill"].includes(jsDoccableName)) {
-                    formattedValue = `"${formattedValue}"`
-                } else {
-                    formattedValue = JSON.stringify(formattedValue)
-                }
+        if (JSDOC_PROPS_TO_EVAL.includes(jsDoccableName)) {
+            if (required && jsDoccableName === 'required') {
+                formattedValue = ''
+            } else if (!required && jsDoccableName === 'required') { 
+                continue;
+            } else if (value.type === 'string' && ["default", "prefill"].includes(jsDoccableName)) {
+                formattedValue = `"${formattedValue}"`
+            } else {
+                formattedValue = JSON.stringify(formattedValue)
             }
-
-            output += `${padding} * @${jsDoccableName} ${formattedValue}\n`;
         }
 
-        output += `${padding} */\n`;
+        output += `${padding} * @${jsDoccableName} ${formattedValue}\n`;
+
+    }
+
+    if (required) {
+        output += `${padding} * @required true\n`;
+    }
+
+    output += `${padding} */\n`;
 
     return output;
 }
 
-export function convertSchemaToType(name: string, schema: SchemaProperty, level: number = 0): string {
+export function convertSchemaToType(name: string, schema: SchemaProperty, required = false, level = 0): string {
     const padding = '\t'.repeat(level);
 
     // @ts-ignore
@@ -344,14 +348,14 @@ export function convertSchemaToType(name: string, schema: SchemaProperty, level:
 
         const jsDoccable: SchemaProperty = JSON.parse(JSON.stringify(schema));
 
-        output += convertJsDoccableToString(jsDoccable, level)
+        const { properties, required } = (schema as ObjectSchema);
+
+        output += convertJsDoccableToString(jsDoccable, false, level)
 
         output += `type ${name} = {\n`;
 
-        const { properties } = (schema as ObjectSchema);
-
         for (const [name, property] of Object.entries(properties)) {
-            output += `${convertSchemaToType(name, property, level + 1)}\n\n`;
+            output += `${convertSchemaToType(name, property, required.includes(name), level + 1)}\n\n`;
         }
 
         return `${output}}`;
@@ -361,16 +365,16 @@ export function convertSchemaToType(name: string, schema: SchemaProperty, level:
 
     const jsDoccable: SchemaProperty = JSON.parse(JSON.stringify(schema));
 
-    output += convertJsDoccableToString(jsDoccable, level)
+    output += convertJsDoccableToString(jsDoccable, required, level)
     
-    const required = jsDoccable.default !== undefined ? '?' : '';
+    const requiredString = jsDoccable.default !== undefined ? '?' : '';
 
     // @ts-ignore
     if (jsDoccable?.enum) {
         // @ts-ignore
-        output += `${padding}${name}${required}: ${jsDoccable?.enum.map((each) => `'${each}'`).join(' | ')}`;
+        output += `${padding}${name}${requiredString}: ${jsDoccable?.enum.map((each) => `'${each}'`).join(' | ')}`;
     } else {
-        output += `${padding}${name}${required}: ${schema.type}`;
+        output += `${padding}${name}${requiredString}: ${schema.type}`;
     }
 
     return output;
@@ -419,6 +423,23 @@ export function getSchemaFromSourcePath(sourcePath: string, inputFileName: strin
     return cleanUpSchema(schema);
 }
 
+export function getSchemaFromSourcePathMultiple(sourcePath: string, inputFileName: string, pattern: RegExp) {
+    const { program, sourceFile } = loadProgram(sourcePath, inputFileName);
+
+    const checker = program.getTypeChecker();
+
+    const { inputNodes } = getDefaultsFromInputAssignMultiple(checker, sourceFile, pattern);
+
+    if (!inputNodes.length) {
+        console.error(`No '${pattern}' type found in the supplied file.`);
+        process.exit(1);
+    }
+
+    return inputNodes
+        .map((inputNode) => convertInputIntoSchema(checker, inputNode))
+        .map((schema) => cleanUpSchema(schema))
+}
+
 function getDefaultsFromInputAssign(checker: ts.TypeChecker, sourceFile: ts.SourceFile, typeName?: string) {
     let inputNode: ts.Node | undefined;
     let inputDefaults: ts.BindingElement[] | undefined;
@@ -465,6 +486,33 @@ function getDefaultsFromInputAssign(checker: ts.TypeChecker, sourceFile: ts.Sour
     return { inputNode, inputDefaults };
 }
 
+function getDefaultsFromInputAssignMultiple(checker: ts.TypeChecker, sourceFile: ts.SourceFile, pattern: RegExp) {
+    const alreadyProcessed: string[] = [];
+    const inputNodes: ts.Node[] = [];
+
+    for (const child of sourceFile.statements) {
+        const refreshedPattern = new RegExp(pattern)
+
+        let found = findSyntaxKind(child, ts.SyntaxKind.InterfaceDeclaration);
+
+        if (!found) {
+            found = findSyntaxKind(child, ts.SyntaxKind.TypeAliasDeclaration);
+        }
+
+        if (!found) continue;
+
+        if (!refreshedPattern.test(found.name.escapedText) && !alreadyProcessed.includes(found.name.escapedText)) continue;
+
+        alreadyProcessed.push(found.name.escapedText)
+
+        inputNodes.push(found);
+    }
+
+    return { inputNodes, inputDefaults: [] };
+}
+
+
+
 function cleanUpSchema(schema: SchemaProperty) {
     if (schema.type === 'object') {
         const properties = (schema as ObjectSchema).properties
@@ -473,14 +521,16 @@ function cleanUpSchema(schema: SchemaProperty) {
         }
     }
 
+    if (schema.type !== 'object') {
+        delete schema.required;
+    }
+
     for (const key in schema) {
         if (schema[key as keyof typeof schema] === undefined) delete schema[key as keyof typeof schema]
     }
 
     return schema;
 }
-
-
 
 program
     .command('type-to-json')
@@ -502,8 +552,23 @@ program
     .argument('<source>')
     .option('--inputFile <inputFile>', 'Input file', 'input.ts')
     .option('--typeRegex <regex>', 'Input type regex', '.*Input')
-    .action((source, options: { inputFile: string, typeRegex: string }) => {
+    .option('--ignoreSpecificType <ignoredTypeName>', 'Input type to ignore', '')
+    .option('--write <folder>', 'A folder to write the output to', '')
+    .action((source: string, options: { inputFile: string, typeRegex: string, ignoreSpecificType: string, write: string }) => {
+        const schemas = getSchemaFromSourcePathMultiple(source, options.inputFile, new RegExp(options.typeRegex))
 
+        for (const schema of schemas) {
+            if (options.write) {
+                const inputSchemaPath = `${options.write}/${schema.id}`
+
+                if (!fs.existsSync(inputSchemaPath)) {
+                    fs.mkdirSync(inputSchemaPath)
+                }
+                fs.writeFileSync(`${inputSchemaPath}/INPUT_SCHEMA.json`, JSON.stringify(schema, null, 4), 'utf8');
+            } else {
+                console.log(JSON.stringify(schema, null, 4))
+            }
+        }
     });
 
 program
@@ -519,10 +584,7 @@ const camelize = (s: string) => {
     return camelized.join('');
 };
 
-program
-    .command('multiactor-json-to-type')
-    .argument('<actorsFolder>')
-    .action((actorsFolder: string) => {
+export function multiActorJsonToTypes(actorsFolder: string): string[] {
         const actorsDirs = fs.readdirSync(actorsFolder);
         const schemas = [];
 
@@ -539,14 +601,34 @@ program
                 schemaPath = actorInfo.input;
             }
 
+
             schemas.push({
                 name: camelize(actorsDir.split('/').slice(-1)[0]),
+                id: actorsDir.split('/').slice(-1)[0],
                 schema: JSON.parse(fs.readFileSync(`${actorsFolder}/${actorsDir}/.actor/${schemaPath}`, 'utf8')),
             });
         }
 
-        for (const schema of schemas) {
-            console.log(convertSchemaToType(`${schema.name}Input`, schema.schema as any));
+        const types = schemas
+            .map(schema => convertSchemaToType(`${schema.name}Input`, {
+                ...schema.schema as any,
+                id: schema.id
+            }))
+
+        return types
+}
+
+program
+    .command('multiactor-json-to-type')
+    .argument('<actorsFolder>')
+    .option('--write <file>')
+    .action((actorsFolder: string, options: { write: string }) => {
+        const inputTypesStrings = multiActorJsonToTypes(actorsFolder)
+
+        if (options.write) {
+            fs.writeFileSync(options.write, inputTypesStrings.join('\n'))
+        } else {
+            console.log(inputTypesStrings.join('\n'))
         }
     });
 
