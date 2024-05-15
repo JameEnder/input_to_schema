@@ -1,15 +1,16 @@
 {
 	"name": "apify-schema",
-	"version": "1.0.0",
+	"version": "0.0.1",
 	"description": "",
-	"main": "index.js",
+	"main": "dist/index.js",
 	"scripts": {
 		"test": "vitest",
+		"build": "tsc",
 		"lint": "eslint index.ts",
 		"lint:fix": "eslint index.ts --fix"
 	},
 	"keywords": [],
-	"author": "",
+	"author": "jameender",
 	"license": "ISC",
 	"dependencies": {
 		"@apify/eslint-config": "^0.3.1",
