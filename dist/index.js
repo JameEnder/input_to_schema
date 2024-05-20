@@ -1,12 +1,9 @@
-"use strict";
-Object.defineProperty(exports, "__esModule", { value: true });
-exports.multiActorJsonToTypes = exports.getSchemaFromSourcePathMultiple = exports.getSchemaFromSourcePath = exports.convertSchemaToType = exports.convertJsDoccableToString = void 0;
-const tslib_1 = require("tslib");
-const fs_1 = tslib_1.__importDefault(require("fs"));
-const path_1 = tslib_1.__importDefault(require("path"));
-const arktype = tslib_1.__importStar(require("arktype"));
-const commander_1 = require("commander");
-const typescript_1 = tslib_1.__importDefault(require("typescript"));
+#!/usr/bin/env node
+import fs from 'fs';
+import path from 'path';
+import * as arktype from 'arktype';
+import { program } from 'commander';
+import ts from 'typescript';
 const findSyntaxKind = (statement, kind) => {
     if (statement.kind === kind) {
         return statement;
@@ -86,21 +83,21 @@ function convertJSDocToSchema(checker, symbol) {
     };
 }
 function convertPrimitiveToSchema(checker, type, doc) {
-    if (type.flags & typescript_1.default.TypeFlags.String) {
+    if (type.flags & ts.TypeFlags.String) {
         return {
             ...doc,
             type: 'string',
             editor: doc.editor || 'textfield',
         };
     }
-    if (type.flags & typescript_1.default.TypeFlags.Number) {
+    if (type.flags & ts.TypeFlags.Number) {
         return {
             ...doc,
             type: 'integer',
             editor: doc.editor || 'number',
         };
     }
-    if (type.flags & typescript_1.default.TypeFlags.Boolean) {
+    if (type.flags & ts.TypeFlags.Boolean) {
         return {
             ...doc,
             type: 'boolean',
@@ -147,21 +144,21 @@ function convertObjectToSchema(checker, object, doc, propertyPath) {
     };
 }
 function convertTypeToSchema(checker, type, doc, propertyPath) {
-    if (type.flags & typescript_1.default.TypeFlags.Enum
-        || type.flags & typescript_1.default.TypeFlags.EnumLike
-        || type.flags & typescript_1.default.TypeFlags.EnumLiteral
-        || (type.flags & typescript_1.default.TypeFlags.Union && !(type.flags & typescript_1.default.TypeFlags.Boolean))) {
+    if (type.flags & ts.TypeFlags.Enum
+        || type.flags & ts.TypeFlags.EnumLike
+        || type.flags & ts.TypeFlags.EnumLiteral
+        || (type.flags & ts.TypeFlags.Union && !(type.flags & ts.TypeFlags.Boolean))) {
         return convertEnumlikeIntoSchema(checker, type, doc);
     }
-    if (type.flags & typescript_1.default.TypeFlags.Object) {
+    if (type.flags & ts.TypeFlags.Object) {
         return convertObjectToSchema(checker, type, doc, propertyPath);
     }
-    if (!(type.flags & typescript_1.default.TypeFlags.NonPrimitive)) {
+    if (!(type.flags & ts.TypeFlags.NonPrimitive)) {
         return convertPrimitiveToSchema(checker, type, doc);
     }
     process.exit(1);
 }
-function convertJsDoccableToString(value, required, level = 0) {
+export function convertJsDoccableToString(value, required, level = 0) {
     const padding = '\t'.repeat(level);
     let output = '';
     output += `${padding}/**\n`;
@@ -197,8 +194,7 @@ function convertJsDoccableToString(value, required, level = 0) {
     output += `${padding} */\n`;
     return output;
 }
-exports.convertJsDoccableToString = convertJsDoccableToString;
-function convertSchemaToType(name, schema, required = false, level = 0) {
+export function convertSchemaToType(name, schema, required = false, level = 0) {
     const padding = '\t'.repeat(level);
     // @ts-ignore
     if (schema.type === 'integer') {
@@ -223,7 +219,7 @@ function convertSchemaToType(name, schema, required = false, level = 0) {
         output += convertJsDoccableToString(jsDoccable, false, level);
         output += `type ${name} = {\n`;
         for (const [name, property] of Object.entries(properties)) {
-            output += `${convertSchemaToType(name, property, required.includes(name), level + 1)}\n\n`;
+            output += `${convertSchemaToType(name, property, required ? required.includes(name) : false, level + 1)}\n\n`;
         }
         return `${output}}`;
     }
@@ -241,15 +237,14 @@ function convertSchemaToType(name, schema, required = false, level = 0) {
     }
     return output;
 }
-exports.convertSchemaToType = convertSchemaToType;
 function loadProgram(sourcePath, inputFileName) {
-    const files = fs_1.default.readdirSync(sourcePath).map((file) => path_1.default.join(sourcePath, file));
+    const files = fs.readdirSync(sourcePath).map((file) => path.join(sourcePath, file));
     const inputFilePath = files.find((file) => file.includes(inputFileName));
     if (!inputFilePath) {
         console.error(`Couldn't find any '${inputFileName}' file in '${sourcePath}'.`);
         process.exit(1);
     }
-    const program = typescript_1.default.createProgram(files, { baseUrl: sourcePath });
+    const program = ts.createProgram(files, { baseUrl: sourcePath });
     const sourceFile = program.getSourceFile(inputFilePath);
     if (!sourceFile) {
         console.error("Couldn't load source program");
@@ -257,7 +252,7 @@ function loadProgram(sourcePath, inputFileName) {
     }
     return { program, sourceFile };
 }
-function getSchemaFromSourcePath(sourcePath, inputFileName, typeName) {
+export function getSchemaFromSourcePath(sourcePath, inputFileName, typeName) {
     const { program, sourceFile } = loadProgram(sourcePath, inputFileName);
     const checker = program.getTypeChecker();
     const { inputNode, inputDefaults } = getDefaultsFromInputAssign(checker, sourceFile, typeName);
@@ -272,11 +267,10 @@ function getSchemaFromSourcePath(sourcePath, inputFileName, typeName) {
     }
     return cleanUpSchema(schema);
 }
-exports.getSchemaFromSourcePath = getSchemaFromSourcePath;
-function getSchemaFromSourcePathMultiple(sourcePath, inputFileName, pattern) {
+export function getSchemaFromSourcePathMultiple(sourcePath, inputFileName, ignoreTypeName, pattern) {
     const { program, sourceFile } = loadProgram(sourcePath, inputFileName);
     const checker = program.getTypeChecker();
-    const { inputNodes } = getDefaultsFromInputAssignMultiple(checker, sourceFile, pattern);
+    const { inputNodes } = getDefaultsFromInputAssignMultiple(checker, sourceFile, ignoreTypeName, pattern);
     if (!inputNodes.length) {
         console.error(`No '${pattern}' type found in the supplied file.`);
         process.exit(1);
@@ -285,12 +279,11 @@ function getSchemaFromSourcePathMultiple(sourcePath, inputFileName, pattern) {
         .map((inputNode) => convertInputIntoSchema(checker, inputNode))
         .map((schema) => cleanUpSchema(schema));
 }
-exports.getSchemaFromSourcePathMultiple = getSchemaFromSourcePathMultiple;
 function getDefaultsFromInputAssign(checker, sourceFile, typeName) {
     let inputNode;
     let inputDefaults;
     for (const child of sourceFile.statements) {
-        const resultVD = findSyntaxKind(child, typescript_1.default.SyntaxKind.VariableDeclaration);
+        const resultVD = findSyntaxKind(child, ts.SyntaxKind.VariableDeclaration);
         if (!resultVD)
             continue;
         const { initializer } = resultVD;
@@ -298,7 +291,7 @@ function getDefaultsFromInputAssign(checker, sourceFile, typeName) {
             continue;
         if (initializer.name.escapedText !== typeName && initialized.name.escapedText !== typeName)
             continue;
-        const defaults = findSyntaxKind(child, typescript_1.default.SyntaxKind.ObjectBindingPattern);
+        const defaults = findSyntaxKind(child, ts.SyntaxKind.ObjectBindingPattern);
         if (!defaults)
             continue;
         inputNode = initializer;
@@ -307,9 +300,9 @@ function getDefaultsFromInputAssign(checker, sourceFile, typeName) {
     }
     if (!inputNode) {
         for (const child of sourceFile.statements) {
-            let found = findSyntaxKind(child, typescript_1.default.SyntaxKind.InterfaceDeclaration);
+            let found = findSyntaxKind(child, ts.SyntaxKind.InterfaceDeclaration);
             if (!found) {
-                found = findSyntaxKind(child, typescript_1.default.SyntaxKind.TypeAliasDeclaration);
+                found = findSyntaxKind(child, ts.SyntaxKind.TypeAliasDeclaration);
             }
             if (!found)
                 continue;
@@ -323,18 +316,20 @@ function getDefaultsFromInputAssign(checker, sourceFile, typeName) {
     }
     return { inputNode, inputDefaults };
 }
-function getDefaultsFromInputAssignMultiple(checker, sourceFile, pattern) {
+function getDefaultsFromInputAssignMultiple(checker, sourceFile, ignoreTypeName, pattern) {
     const alreadyProcessed = [];
     const inputNodes = [];
     for (const child of sourceFile.statements) {
         const refreshedPattern = new RegExp(pattern);
-        let found = findSyntaxKind(child, typescript_1.default.SyntaxKind.InterfaceDeclaration);
+        let found = findSyntaxKind(child, ts.SyntaxKind.InterfaceDeclaration);
         if (!found) {
-            found = findSyntaxKind(child, typescript_1.default.SyntaxKind.TypeAliasDeclaration);
+            found = findSyntaxKind(child, ts.SyntaxKind.TypeAliasDeclaration);
         }
         if (!found)
             continue;
         if (!refreshedPattern.test(found.name.escapedText) && !alreadyProcessed.includes(found.name.escapedText))
+            continue;
+        if (found.name.escapedText === ignoreTypeName)
             continue;
         alreadyProcessed.push(found.name.escapedText);
         inputNodes.push(found);
@@ -357,7 +352,7 @@ function cleanUpSchema(schema) {
     }
     return schema;
 }
-commander_1.program
+program
     .command('type-to-json')
     .argument('<source>')
     .option('--typeName <name>', 'custom Input type name', 'Input')
@@ -368,7 +363,7 @@ commander_1.program
     const json = JSON.stringify(schema, undefined, 4);
     console.log(json);
 });
-commander_1.program
+program
     .command('multiactor-type-to-json')
     .argument('<source>')
     .option('--inputFile <inputFile>', 'Input file', 'input.ts')
@@ -376,46 +371,50 @@ commander_1.program
     .option('--ignoreSpecificType <ignoredTypeName>', 'Input type to ignore', '')
     .option('--write <folder>', 'A folder to write the output to', '')
     .action((source, options) => {
-    const schemas = getSchemaFromSourcePathMultiple(source, options.inputFile, new RegExp(options.typeRegex));
+    const schemas = getSchemaFromSourcePathMultiple(source, options.inputFile, options.ignoreSpecificType, new RegExp(options.typeRegex));
     for (const schema of schemas) {
         if (options.write) {
             const inputSchemaPath = `${options.write}/${schema.id}`;
-            if (!fs_1.default.existsSync(inputSchemaPath)) {
-                fs_1.default.mkdirSync(inputSchemaPath);
+            delete schema.id;
+            if (!fs.existsSync(inputSchemaPath)) {
+                fs.mkdirSync(inputSchemaPath);
             }
-            fs_1.default.writeFileSync(`${inputSchemaPath}/INPUT_SCHEMA.json`, JSON.stringify(schema, null, 4), 'utf8');
+            if (!fs.existsSync(`${inputSchemaPath}/.actor`)) {
+                fs.mkdirSync(`${inputSchemaPath}/.actor`);
+            }
+            fs.writeFileSync(`${inputSchemaPath}/.actor/INPUT_SCHEMA.json`, JSON.stringify(schema, null, 4), 'utf8');
         }
         else {
             console.log(JSON.stringify(schema, null, 4));
         }
     }
 });
-commander_1.program
+program
     .command('json-to-type')
     .argument('<source>')
     .action((source) => {
-    console.log(convertSchemaToType('Input', JSON.parse(fs_1.default.readFileSync(source, 'utf8'))));
+    console.log(convertSchemaToType('Input', JSON.parse(fs.readFileSync(source, 'utf8'))));
 });
 const camelize = (s) => {
     const camelized = s.replace(/-./g, (x) => x[1].toUpperCase()).split('');
     camelized[0] = camelized[0].toUpperCase();
     return camelized.join('');
 };
-function multiActorJsonToTypes(actorsFolder) {
-    const actorsDirs = fs_1.default.readdirSync(actorsFolder);
+export function multiActorJsonToTypes(actorsFolder) {
+    const actorsDirs = fs.readdirSync(actorsFolder);
     const schemas = [];
     for (const actorsDir of actorsDirs) {
-        const files = fs_1.default.readdirSync(`${actorsFolder}/${actorsDir}/.actor/`);
+        const files = fs.readdirSync(`${actorsFolder}/${actorsDir}/.actor/`);
         let schemaPath = files.find((file) => file.includes('INPUT_SCHEMA.json'));
         if (!schemaPath) {
             const actorFile = files.find((file) => file.includes('actor.json'));
-            const actorInfo = JSON.parse(fs_1.default.readFileSync(`${actorsFolder}/${actorsDir}/.actor/${actorFile}`, 'utf8'));
+            const actorInfo = JSON.parse(fs.readFileSync(`${actorsFolder}/${actorsDir}/.actor/${actorFile}`, 'utf8'));
             schemaPath = actorInfo.input;
         }
         schemas.push({
             name: camelize(actorsDir.split('/').slice(-1)[0]),
             id: actorsDir.split('/').slice(-1)[0],
-            schema: JSON.parse(fs_1.default.readFileSync(`${actorsFolder}/${actorsDir}/.actor/${schemaPath}`, 'utf8')),
+            schema: JSON.parse(fs.readFileSync(`${actorsFolder}/${actorsDir}/.actor/${schemaPath}`, 'utf8')),
         });
     }
     const types = schemas
@@ -425,21 +424,20 @@ function multiActorJsonToTypes(actorsFolder) {
     }));
     return types;
 }
-exports.multiActorJsonToTypes = multiActorJsonToTypes;
-commander_1.program
+program
     .command('multiactor-json-to-type')
     .argument('<actorsFolder>')
     .option('--write <file>')
     .action((actorsFolder, options) => {
     const inputTypesStrings = multiActorJsonToTypes(actorsFolder);
     if (options.write) {
-        fs_1.default.writeFileSync(options.write, inputTypesStrings.join('\n'));
+        fs.writeFileSync(options.write, inputTypesStrings.join('\n'));
     }
     else {
         console.log(inputTypesStrings.join('\n'));
     }
 });
 if (process.env.MODE !== 'test') {
-    commander_1.program.parse();
+    program.parse();
 }
 //# sourceMappingURL=index.js.map

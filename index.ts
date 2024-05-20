@@ -1,3 +1,5 @@
+#!/usr/bin/env node
+
 import fs from 'fs';
 import path from 'path';
 
@@ -355,7 +357,7 @@ export function convertSchemaToType(name: string, schema: SchemaProperty, requir
         output += `type ${name} = {\n`;
 
         for (const [name, property] of Object.entries(properties)) {
-            output += `${convertSchemaToType(name, property, required.includes(name), level + 1)}\n\n`;
+            output += `${convertSchemaToType(name, property, required ? required.includes(name) : false, level + 1)}\n\n`;
         }
 
         return `${output}}`;
@@ -423,12 +425,12 @@ export function getSchemaFromSourcePath(sourcePath: string, inputFileName: strin
     return cleanUpSchema(schema);
 }
 
-export function getSchemaFromSourcePathMultiple(sourcePath: string, inputFileName: string, pattern: RegExp) {
+export function getSchemaFromSourcePathMultiple(sourcePath: string, inputFileName: string, ignoreTypeName: string, pattern: RegExp) {
     const { program, sourceFile } = loadProgram(sourcePath, inputFileName);
 
     const checker = program.getTypeChecker();
 
-    const { inputNodes } = getDefaultsFromInputAssignMultiple(checker, sourceFile, pattern);
+    const { inputNodes } = getDefaultsFromInputAssignMultiple(checker, sourceFile, ignoreTypeName, pattern);
 
     if (!inputNodes.length) {
         console.error(`No '${pattern}' type found in the supplied file.`);
@@ -486,7 +488,7 @@ function getDefaultsFromInputAssign(checker: ts.TypeChecker, sourceFile: ts.Sour
     return { inputNode, inputDefaults };
 }
 
-function getDefaultsFromInputAssignMultiple(checker: ts.TypeChecker, sourceFile: ts.SourceFile, pattern: RegExp) {
+function getDefaultsFromInputAssignMultiple(checker: ts.TypeChecker, sourceFile: ts.SourceFile, ignoreTypeName: string, pattern: RegExp) {
     const alreadyProcessed: string[] = [];
     const inputNodes: ts.Node[] = [];
 
@@ -502,6 +504,8 @@ function getDefaultsFromInputAssignMultiple(checker: ts.TypeChecker, sourceFile:
         if (!found) continue;
 
         if (!refreshedPattern.test(found.name.escapedText) && !alreadyProcessed.includes(found.name.escapedText)) continue;
+
+        if (found.name.escapedText === ignoreTypeName) continue;
 
         alreadyProcessed.push(found.name.escapedText)
 
@@ -555,16 +559,23 @@ program
     .option('--ignoreSpecificType <ignoredTypeName>', 'Input type to ignore', '')
     .option('--write <folder>', 'A folder to write the output to', '')
     .action((source: string, options: { inputFile: string, typeRegex: string, ignoreSpecificType: string, write: string }) => {
-        const schemas = getSchemaFromSourcePathMultiple(source, options.inputFile, new RegExp(options.typeRegex))
+        const schemas = getSchemaFromSourcePathMultiple(source, options.inputFile, options.ignoreSpecificType, new RegExp(options.typeRegex))
 
         for (const schema of schemas) {
             if (options.write) {
                 const inputSchemaPath = `${options.write}/${schema.id}`
 
+                delete schema.id;
+
                 if (!fs.existsSync(inputSchemaPath)) {
                     fs.mkdirSync(inputSchemaPath)
                 }
-                fs.writeFileSync(`${inputSchemaPath}/INPUT_SCHEMA.json`, JSON.stringify(schema, null, 4), 'utf8');
+
+                if (!fs.existsSync(`${inputSchemaPath}/.actor`)) {
+                    fs.mkdirSync(`${inputSchemaPath}/.actor`)
+                }
+
+                fs.writeFileSync(`${inputSchemaPath}/.actor/INPUT_SCHEMA.json`, JSON.stringify(schema, null, 4), 'utf8');
             } else {
                 console.log(JSON.stringify(schema, null, 4))
             }

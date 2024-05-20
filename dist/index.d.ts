@@ -1,3 +1,4 @@
+#!/usr/bin/env node
 type IntegerSchema = {
     type: 'integer';
     editor: 'number';
@@ -45,7 +46,7 @@ type SchemaProperty = {
 export declare function convertJsDoccableToString(value: SchemaProperty, required: boolean, level?: number): string;
 export declare function convertSchemaToType(name: string, schema: SchemaProperty, required?: boolean, level?: number): string;
 export declare function getSchemaFromSourcePath(sourcePath: string, inputFileName: string, typeName?: string): SchemaProperty;
-export declare function getSchemaFromSourcePathMultiple(sourcePath: string, inputFileName: string, pattern: RegExp): SchemaProperty[];
+export declare function getSchemaFromSourcePathMultiple(sourcePath: string, inputFileName: string, ignoreTypeName: string, pattern: RegExp): SchemaProperty[];
 export declare function multiActorJsonToTypes(actorsFolder: string): string[];
 export {};
 //# sourceMappingURL=index.d.ts.map
