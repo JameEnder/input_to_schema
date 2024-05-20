@@ -150,7 +150,8 @@ function convertJSDocToSchema(
         'enumTitles?': 'string[]',
         'sectionCaption?': 'string',
         'sectionDescription?': 'string',
-        'required?': 'string' 
+        'required?': 'string', 
+        'example?': 'any'
     });
 
     const jsDoc = symbol.getJsDocTags(checker);
@@ -167,6 +168,8 @@ function convertJSDocToSchema(
     if (problems) {
         console.warn(problems);
     }
+
+    if (!description) validatedJsDoc.description = '';
 
     return {
         ...validatedJsDoc,
@@ -284,6 +287,15 @@ function convertTypeToSchema(
         return convertPrimitiveToSchema(checker, type as ts.Type, doc);
     }
 
+    if (type.intrinsicName === 'object') {
+        return {
+            ...doc,
+            type: 'object'
+        }
+    }
+
+    console.log(type)
+
     process.exit(1);
 }
 
@@ -345,7 +357,7 @@ export function convertSchemaToType(name: string, schema: SchemaProperty, requir
         }
     }
 
-    if (schema.type === 'object') {
+    if (schema.type === 'object' && schema.id) {
         let output = '';
 
         const jsDoccable: SchemaProperty = JSON.parse(JSON.stringify(schema));
