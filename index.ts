@@ -356,8 +356,10 @@ export function convertSchemaToType(name: string, schema: SchemaProperty, requir
 
         output += `type ${name} = {\n`;
 
-        for (const [name, property] of Object.entries(properties)) {
-            output += `${convertSchemaToType(name, property, required ? required.includes(name) : false, level + 1)}\n\n`;
+        if (properties) {
+            for (const [name, property] of Object.entries(properties)) {
+                output += `${convertSchemaToType(name, property, required ? required.includes(name) : false, level + 1)}\n\n`;
+            }
         }
 
         return `${output}}`;

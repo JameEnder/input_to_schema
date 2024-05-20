@@ -218,8 +218,10 @@ export function convertSchemaToType(name, schema, required = false, level = 0) {
         const { properties, required } = schema;
         output += convertJsDoccableToString(jsDoccable, false, level);
         output += `type ${name} = {\n`;
-        for (const [name, property] of Object.entries(properties)) {
-            output += `${convertSchemaToType(name, property, required ? required.includes(name) : false, level + 1)}\n\n`;
+        if (properties) {
+            for (const [name, property] of Object.entries(properties)) {
+                output += `${convertSchemaToType(name, property, required ? required.includes(name) : false, level + 1)}\n\n`;
+            }
         }
         return `${output}}`;
     }
