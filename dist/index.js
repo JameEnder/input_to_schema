@@ -348,21 +348,26 @@ function getDefaultsFromInputAssignMultiple(checker, sourceFile, ignoreTypeName,
     }
     return { inputNodes, inputDefaults: [] };
 }
-function cleanUpSchema(schema) {
-    if (schema.type === 'object') {
-        const properties = schema.properties;
-        for (const name in properties) {
-            cleanUpSchema(properties[name]);
+function cleanUpSchema(unorderedSchema) {
+    const schema = new Map();
+    schema.set('title', unorderedSchema.title);
+    schema.set('type', unorderedSchema.type);
+    schema.set('editor', unorderedSchema.editor);
+    for (const key of Object.keys(unorderedSchema)) {
+        if (['title', 'type', 'editor'].includes(key))
+            continue;
+        schema.set(key, unorderedSchema[key]);
+    }
+    if (schema.get('type') === 'object' && schema.get('properties')) {
+        const properties = schema.get('properties');
+        for (const name of Object.keys(properties)) {
+            properties[name] = cleanUpSchema(properties[name]);
         }
     }
-    if (schema.type !== 'object') {
-        delete schema.required;
+    if (schema.get('type') !== 'object') {
+        schema.set('required', undefined);
     }
-    for (const key in schema) {
-        if (schema[key] === undefined)
-            delete schema[key];
-    }
-    return schema;
+    return Object.fromEntries(schema);
 }
 program
     .command('type-to-json')

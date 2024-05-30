@@ -531,23 +531,32 @@ function getDefaultsFromInputAssignMultiple(checker: ts.TypeChecker, sourceFile:
 
 
 
-function cleanUpSchema(schema: SchemaProperty) {
-    if (schema.type === 'object') {
-        const properties = (schema as ObjectSchema).properties
-        for (const name in properties) {
-            cleanUpSchema(properties[name])
+function cleanUpSchema(unorderedSchema: SchemaProperty) {
+    const schema = new Map();
+
+    schema.set('title', unorderedSchema.title);
+    schema.set('type', unorderedSchema.type);
+    schema.set('editor', unorderedSchema.editor);
+
+    for (const key of Object.keys(unorderedSchema)) {
+        if (['title', 'type', 'editor'].includes(key)) continue;
+
+        schema.set(key, unorderedSchema[key]);
+    }
+
+    if (schema.get('type') === 'object' && schema.get('properties')) {
+        const properties = schema.get('properties');
+
+        for (const name of Object.keys(properties)) {
+            properties[name] = cleanUpSchema(properties[name])
         }
     }
 
-    if (schema.type !== 'object') {
-        delete schema.required;
+    if (schema.get('type') !== 'object') {
+        schema.set('required', undefined);
     }
 
-    for (const key in schema) {
-        if (schema[key as keyof typeof schema] === undefined) delete schema[key as keyof typeof schema]
-    }
-
-    return schema;
+    return Object.fromEntries(schema);
 }
 
 program
