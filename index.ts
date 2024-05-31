@@ -3,7 +3,7 @@
 import fs from 'fs';
 import path from 'path';
 
-import * as arktype from 'arktype';
+import { type } from 'arktype';
 import { program } from 'commander';
 import ts from 'typescript';
 
@@ -15,11 +15,12 @@ const findSyntaxKind = (statement: ts.Node, kind: ts.SyntaxKind): ts.Node | unde
     return statement.getChildren().find((child) => findSyntaxKind(child, kind))
 };
 
-const JSDOC_PROPS_TO_EVAL = ["default", "prefill", "minimum", "maximum", "enumTitles", "schemaVersion", "required"]
+const JSDOC_PROPS_TO_EVAL = ["default", "prefill", "minimum", "maximum", "enumTitles", "schemaVersion", "required", "items", "example"]
 
-function getJsDocFromNode(checker: ts.TypeChecker, rawNode: ts.Node) {
+function getJsDocFromNode(_checker: ts.TypeChecker, rawNode: ts.Node) {
     const output: Record<string, any> = {};
 
+    // @ts-ignore
     const node = rawNode.getFullText ? rawNode : rawNode.valueDeclaration
 
     const jsDocRegex = new RegExp(/@(\w+)\s+((?:.*(?:\n(?!\s*\*\s*@|\s*\*\/).*)*))/mg)
@@ -33,7 +34,11 @@ function getJsDocFromNode(checker: ts.TypeChecker, rawNode: ts.Node) {
 
         if (JSDOC_PROPS_TO_EVAL.includes(name)) {
             try {
-                output[name] = eval(output[name])
+                if (name === "items") {
+                    output[name] = eval(JSON.parse(output[name]))
+                } else {
+                    output[name] = eval(output[name])
+                }
             } catch (e) {
                 console.error(name, "with value", JSON.stringify(output[name]), "couldnt be evaluated because", e)
                 process.exit(1)
@@ -46,21 +51,18 @@ function getJsDocFromNode(checker: ts.TypeChecker, rawNode: ts.Node) {
 
 type IntegerSchema = {
     type: 'integer'
-    editor: 'number'
     default?: number
     prefill?: number
 }
 
 type StringSchema = {
     type: 'string'
-    editor: 'textfield'
     default?: string
     prefill?: string
 }
 
 type ObjectSchema = {
     type: 'object'
-    editor: 'textfield'
     default?: Object
     prefill?: Object
     properties: Record<string, SchemaProperty>
@@ -69,7 +71,6 @@ type ObjectSchema = {
 
 type EnumSchema = {
     type: ObjectSchema['type'] | BooleanSchema['type'] | ArraySchema['type'] | StringSchema['type'] | IntegerSchema['type']
-    editor: 'select' | 'stringList'
     enum: any[]
     enumTitles?: string[]
     default?: any
@@ -78,37 +79,52 @@ type EnumSchema = {
 
 type BooleanSchema = {
     type: 'boolean'
-    editor: 'checkmark'
     default?: boolean
     prefill?: boolean
 }
 
 type ArraySchema = {
     type: 'array'
-    editor: 'textfield'
     default?: any[]
     prefill?: any[]
 }
 
-type SchemaProperty = { title: string; description: string } & (
+type SchemaProperty = (
     | IntegerSchema
     | BooleanSchema
     | StringSchema
     | ObjectSchema
     | EnumSchema
     | ArraySchema
-)
+) & JSDocPropertyInfo
+
+const JSDocPropertyInfoSchema = type({
+    'title?': 'string',
+    'description?': 'string',
+    'editor?': 'string',
+    'default?': 'string',
+    'prefill?': 'string | string[]',
+    'id?': 'string',
+    'enumTitles?': 'string[]',
+    'sectionCaption?': 'string',
+    'sectionDescription?': 'string',
+    'required?': 'string | string[]', 
+    'uniqueItems?': 'any[]',
+    'example?': 'any',
+    'items?': 'object' 
+});
+
+type JSDocPropertyInfo = typeof JSDocPropertyInfoSchema.infer
 
 function convertInputIntoSchema(
     checker: ts.TypeChecker,
     node: ts.Node,
-): Omit<SchemaProperty, 'editor'> {
+): SchemaProperty {
     const type = checker.getTypeAtLocation(node);
 
     const schema = convertObjectToSchema(checker, type as ts.InterfaceType, {} as any, []);
 
-    // @ts-ignore
-    delete schema.editor;
+    schema.editor = undefined;
 
     return {
         ...getJsDocFromNode(checker, node),
@@ -116,7 +132,7 @@ function convertInputIntoSchema(
     };
 }
 
-function convertEnumlikeIntoEnum(checker: ts.TypeChecker, enumlike: ts.EnumType) {
+function convertEnumlikeIntoEnum(_checker: ts.TypeChecker, enumlike: ts.EnumType) {
     // @ts-ignore
     return enumlike.types.map((type: ts.Type) => type.value);
 }
@@ -124,12 +140,11 @@ function convertEnumlikeIntoEnum(checker: ts.TypeChecker, enumlike: ts.EnumType)
 function convertEnumlikeIntoSchema(
     checker: ts.TypeChecker,
     enumlike: ts.EnumType,
-    doc: Omit<SchemaProperty, 'type'>,
+    doc: JSDocPropertyInfo,
 ): SchemaProperty {
     const schema = {
         // TODO: actual type inference
         type: 'string' as const,
-        editor: 'select' as const,
         enum: convertEnumlikeIntoEnum(checker, enumlike),
         ...doc
     };
@@ -141,19 +156,6 @@ function convertJSDocToSchema(
     checker: ts.TypeChecker,
     symbol: ts.Symbol,
 ): Omit<SchemaProperty, 'type'> {
-    const JSDocInfoValidator = arktype.type({
-        'title?': 'string',
-        'description?': 'string',
-        'editor?': 'string',
-        'default?': 'string',
-        'prefill?': 'string | string[]',
-        'enumTitles?': 'string[]',
-        'sectionCaption?': 'string',
-        'sectionDescription?': 'string',
-        'required?': 'string', 
-        'example?': 'any'
-    });
-
     const jsDoc = symbol.getJsDocTags(checker);
     const collectedJsDoc: Record<string, string> = {};
 
@@ -163,21 +165,20 @@ function convertJSDocToSchema(
         }
     }
 
-    const { data: validatedJsDoc, problems } = JSDocInfoValidator(collectedJsDoc);
+    const validatedJsDoc = JSDocPropertyInfoSchema(collectedJsDoc);
 
-    if (problems) {
-        console.warn(problems);
+    if (validatedJsDoc instanceof type.errors) {
+        console.warn(validatedJsDoc.summary);
+        process.exit(1);
     }
 
-    if (!description) validatedJsDoc.description = '';
+    if (!validatedJsDoc.description) validatedJsDoc.description = ""
 
-    return {
-        ...validatedJsDoc,
-    };
+    return validatedJsDoc;
 }
 
 function convertPrimitiveToSchema(
-    checker: ts.TypeChecker,
+    _checker: ts.TypeChecker,
     type: ts.Type,
     doc: Omit<SchemaProperty, 'type'>,
 ): SchemaProperty {
@@ -185,38 +186,33 @@ function convertPrimitiveToSchema(
         return {
             ...doc,
             type: 'string',
-            editor: doc.editor || 'textfield',
         };
     } if (type.flags & ts.TypeFlags.Number) {
         return {
             ...doc,
             type: 'integer',
-            editor: doc.editor || 'number',
         };
     } if (type.flags & ts.TypeFlags.Boolean) {
         return {
             ...doc,
             type: 'boolean',
-            editor: doc.editor || 'checkmark',
         };
     }
     return {
         ...doc,
         type: 'string',
-        editor: doc.editor || 'textfield',
     };
 }
 
 function convertArrayToSchema(
-    checker: ts.TypeChecker,
-    array: ts.ObjectType,
+    _checker: ts.TypeChecker,
+    _array: ts.ObjectType,
     doc: Omit<SchemaProperty, 'type'>,
 ): SchemaProperty {
     return {
         type: 'array',
-        editor: 'textfield',
         ...doc,
-        uniqueItems: doc.uniqueItems && eval(doc.uniqueItems)
+        uniqueItems: doc.uniqueItems && eval(doc.uniqueItems as unknown as string)
     };
 }
 
@@ -235,7 +231,7 @@ function convertObjectToSchema(
 
     for (const property of properties) {
         // const propertyDoc = convertJSDocToSchema(checker, property);
-        const propertyDoc = getJsDocFromNode(checker, property);
+        const propertyDoc = getJsDocFromNode(checker, property as unknown as ts.Node);
 
         const propertySchema = convertTypeToSchema(
             checker,
@@ -257,7 +253,6 @@ function convertObjectToSchema(
 
     return {
         type: 'object',
-        editor: 'textfield',
         properties: schema,
         ...doc,
         required,
@@ -270,6 +265,8 @@ function convertTypeToSchema(
     doc: Omit<SchemaProperty, 'type'>,
     propertyPath: string[],
 ): SchemaProperty {
+    doc.description ??= "";
+
     if (
         type.flags & ts.TypeFlags.Enum
 		|| type.flags & ts.TypeFlags.EnumLike
@@ -287,11 +284,11 @@ function convertTypeToSchema(
         return convertPrimitiveToSchema(checker, type as ts.Type, doc);
     }
 
-    if (type.intrinsicName === 'object') {
+    if ((type as any).intrinsicName === 'object') {
         return {
             ...doc,
             type: 'object'
-        }
+        } as SchemaProperty
     }
 
     console.log(type)
@@ -308,7 +305,7 @@ export function convertJsDoccableToString(value: SchemaProperty, required: boole
         if (jsDoccableName === 'type') continue;
         if (jsDoccableName === 'enum') continue;
         if (jsDoccableName === 'properties') continue;
-        if (jsDoccableName !== 'required' && jsDoccableValue === '') continue;
+        if (jsDoccableName === 'description' && jsDoccableValue === '') continue;
 
         let formattedValue = jsDoccableValue;
 
@@ -317,7 +314,7 @@ export function convertJsDoccableToString(value: SchemaProperty, required: boole
                 formattedValue = ''
             } else if (!required && jsDoccableName === 'required') { 
                 continue;
-            } else if (value.type === 'string' && ["default", "prefill"].includes(jsDoccableName)) {
+            } else if (value.type === 'string' && ["default", "prefill", "example"].includes(jsDoccableName)) {
                 formattedValue = `"${formattedValue}"`
             } else {
                 formattedValue = JSON.stringify(formattedValue)
@@ -422,7 +419,7 @@ export function getSchemaFromSourcePath(sourcePath: string, inputFileName: strin
 
     const checker = program.getTypeChecker();
 
-    const { inputNode, inputDefaults } = getDefaultsFromInputAssign(checker, sourceFile, typeName);
+    const { inputNode, inputDefaults } = getDefaultsFromInputAssign(checker, sourceFile!, typeName);
 
     if (!inputNode) {
         console.error(`No '${typeName}' type found in the supplied file.`);
@@ -444,7 +441,7 @@ export function getSchemaFromSourcePathMultiple(sourcePath: string, inputFileNam
 
     const checker = program.getTypeChecker();
 
-    const { inputNodes } = getDefaultsFromInputAssignMultiple(checker, sourceFile, ignoreTypeName, pattern);
+    const { inputNodes } = getDefaultsFromInputAssignMultiple(checker, sourceFile!, ignoreTypeName, pattern);
 
     if (!inputNodes.length) {
         console.error(`No '${pattern}' type found in the supplied file.`);
@@ -456,7 +453,7 @@ export function getSchemaFromSourcePathMultiple(sourcePath: string, inputFileNam
         .map((schema) => cleanUpSchema(schema))
 }
 
-function getDefaultsFromInputAssign(checker: ts.TypeChecker, sourceFile: ts.SourceFile, typeName?: string) {
+function getDefaultsFromInputAssign(_checker: ts.TypeChecker, sourceFile: ts.SourceFile, typeName?: string) {
     let inputNode: ts.Node | undefined;
     let inputDefaults: ts.BindingElement[] | undefined;
 
@@ -469,6 +466,7 @@ function getDefaultsFromInputAssign(checker: ts.TypeChecker, sourceFile: ts.Sour
 
         if (!initializer) continue;
 
+        // @ts-ignore
         if (initializer.name.escapedText !== typeName && initialized.name.escapedText !== typeName) continue;
 
         const defaults = findSyntaxKind(child, ts.SyntaxKind.ObjectBindingPattern);
@@ -490,6 +488,7 @@ function getDefaultsFromInputAssign(checker: ts.TypeChecker, sourceFile: ts.Sour
 
             if (!found) continue;
 
+            // @ts-ignore
             if (found.name.escapedText !== typeName) continue;
 
             if (found) {
@@ -502,7 +501,7 @@ function getDefaultsFromInputAssign(checker: ts.TypeChecker, sourceFile: ts.Sour
     return { inputNode, inputDefaults };
 }
 
-function getDefaultsFromInputAssignMultiple(checker: ts.TypeChecker, sourceFile: ts.SourceFile, ignoreTypeName: string, pattern: RegExp) {
+function getDefaultsFromInputAssignMultiple(_checker: ts.TypeChecker, sourceFile: ts.SourceFile, ignoreTypeName: string, pattern: RegExp) {
     const alreadyProcessed: string[] = [];
     const inputNodes: ts.Node[] = [];
 
@@ -517,10 +516,13 @@ function getDefaultsFromInputAssignMultiple(checker: ts.TypeChecker, sourceFile:
 
         if (!found) continue;
 
+        // @ts-ignore
         if (!refreshedPattern.test(found.name.escapedText) && !alreadyProcessed.includes(found.name.escapedText)) continue;
 
+        // @ts-ignore
         if (found.name.escapedText === ignoreTypeName) continue;
 
+        // @ts-ignore
         alreadyProcessed.push(found.name.escapedText)
 
         inputNodes.push(found);
@@ -542,7 +544,7 @@ function cleanUpSchema(unorderedSchema: SchemaProperty) {
     for (const key of Object.keys(unorderedSchema)) {
         if (['title', 'type', 'editor', 'description'].includes(key)) continue;
 
-        schema.set(key, unorderedSchema[key]);
+        schema.set(key, unorderedSchema[key as keyof typeof unorderedSchema]);
     }
 
     if (schema.get('type') === 'object' && schema.get('properties')) {
@@ -554,7 +556,13 @@ function cleanUpSchema(unorderedSchema: SchemaProperty) {
     }
 
     if (schema.get('type') !== 'object') {
-        schema.set('required', undefined);
+        schema.delete('required');
+    }
+
+    for (const key of schema.keys()) {
+        if (schema.get(key) === undefined) {
+            schema.delete(key)
+        }
     }
 
     return Object.fromEntries(schema);

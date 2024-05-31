@@ -1,19 +1,16 @@
 #!/usr/bin/env node
 type IntegerSchema = {
     type: 'integer';
-    editor: 'number';
     default?: number;
     prefill?: number;
 };
 type StringSchema = {
     type: 'string';
-    editor: 'textfield';
     default?: string;
     prefill?: string;
 };
 type ObjectSchema = {
     type: 'object';
-    editor: 'textfield';
     default?: Object;
     prefill?: Object;
     properties: Record<string, SchemaProperty>;
@@ -21,7 +18,6 @@ type ObjectSchema = {
 };
 type EnumSchema = {
     type: ObjectSchema['type'] | BooleanSchema['type'] | ArraySchema['type'] | StringSchema['type'] | IntegerSchema['type'];
-    editor: 'select' | 'stringList';
     enum: any[];
     enumTitles?: string[];
     default?: any;
@@ -29,20 +25,31 @@ type EnumSchema = {
 };
 type BooleanSchema = {
     type: 'boolean';
-    editor: 'checkmark';
     default?: boolean;
     prefill?: boolean;
 };
 type ArraySchema = {
     type: 'array';
-    editor: 'textfield';
     default?: any[];
     prefill?: any[];
 };
-type SchemaProperty = {
-    title: string;
-    description: string;
-} & (IntegerSchema | BooleanSchema | StringSchema | ObjectSchema | EnumSchema | ArraySchema);
+type SchemaProperty = (IntegerSchema | BooleanSchema | StringSchema | ObjectSchema | EnumSchema | ArraySchema) & JSDocPropertyInfo;
+declare const JSDocPropertyInfoSchema: import("arktype").Type<{
+    title?: string | undefined;
+    description?: string | undefined;
+    editor?: string | undefined;
+    default?: string | undefined;
+    prefill?: string | string[] | undefined;
+    id?: string | undefined;
+    enumTitles?: string[] | undefined;
+    sectionCaption?: string | undefined;
+    sectionDescription?: string | undefined;
+    required?: string | string[] | undefined;
+    uniqueItems?: any[] | undefined;
+    example?: any;
+    items?: object | undefined;
+}, {}>;
+type JSDocPropertyInfo = typeof JSDocPropertyInfoSchema.infer;
 export declare function convertJsDoccableToString(value: SchemaProperty, required: boolean, level?: number): string;
 export declare function convertSchemaToType(name: string, schema: SchemaProperty, required?: boolean, level?: number): string;
 export declare function getSchemaFromSourcePath(sourcePath: string, inputFileName: string, typeName?: string): any;

@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 import fs from 'fs';
 import path from 'path';
-import * as arktype from 'arktype';
+import { type } from 'arktype';
 import { program } from 'commander';
 import ts from 'typescript';
 const findSyntaxKind = (statement, kind) => {
@@ -10,9 +10,10 @@ const findSyntaxKind = (statement, kind) => {
     }
     return statement.getChildren().find((child) => findSyntaxKind(child, kind));
 };
-const JSDOC_PROPS_TO_EVAL = ["default", "prefill", "minimum", "maximum", "enumTitles", "schemaVersion", "required"];
-function getJsDocFromNode(checker, rawNode) {
+const JSDOC_PROPS_TO_EVAL = ["default", "prefill", "minimum", "maximum", "enumTitles", "schemaVersion", "required", "items", "example"];
+function getJsDocFromNode(_checker, rawNode) {
     const output = {};
+    // @ts-ignore
     const node = rawNode.getFullText ? rawNode : rawNode.valueDeclaration;
     const jsDocRegex = new RegExp(/@(\w+)\s+((?:.*(?:\n(?!\s*\*\s*@|\s*\*\/).*)*))/mg);
     let matches;
@@ -21,7 +22,12 @@ function getJsDocFromNode(checker, rawNode) {
         output[name] = value.replace(/\n\t\s*\*/g, '');
         if (JSDOC_PROPS_TO_EVAL.includes(name)) {
             try {
-                output[name] = eval(output[name]);
+                if (name === "items") {
+                    output[name] = eval(JSON.parse(output[name]));
+                }
+                else {
+                    output[name] = eval(output[name]);
+                }
             }
             catch (e) {
                 console.error(name, "with value", JSON.stringify(output[name]), "couldnt be evaluated because", e);
@@ -31,17 +37,31 @@ function getJsDocFromNode(checker, rawNode) {
     }
     return output;
 }
+const JSDocPropertyInfoSchema = type({
+    'title?': 'string',
+    'description?': 'string',
+    'editor?': 'string',
+    'default?': 'string',
+    'prefill?': 'string | string[]',
+    'id?': 'string',
+    'enumTitles?': 'string[]',
+    'sectionCaption?': 'string',
+    'sectionDescription?': 'string',
+    'required?': 'string | string[]',
+    'uniqueItems?': 'any[]',
+    'example?': 'any',
+    'items?': 'object'
+});
 function convertInputIntoSchema(checker, node) {
     const type = checker.getTypeAtLocation(node);
     const schema = convertObjectToSchema(checker, type, {}, []);
-    // @ts-ignore
-    delete schema.editor;
+    schema.editor = undefined;
     return {
         ...getJsDocFromNode(checker, node),
         ...schema
     };
 }
-function convertEnumlikeIntoEnum(checker, enumlike) {
+function convertEnumlikeIntoEnum(_checker, enumlike) {
     // @ts-ignore
     return enumlike.types.map((type) => type.value);
 }
@@ -49,25 +69,12 @@ function convertEnumlikeIntoSchema(checker, enumlike, doc) {
     const schema = {
         // TODO: actual type inference
         type: 'string',
-        editor: 'select',
         enum: convertEnumlikeIntoEnum(checker, enumlike),
         ...doc
     };
     return schema;
 }
 function convertJSDocToSchema(checker, symbol) {
-    const JSDocInfoValidator = arktype.type({
-        'title?': 'string',
-        'description?': 'string',
-        'editor?': 'string',
-        'default?': 'string',
-        'prefill?': 'string | string[]',
-        'enumTitles?': 'string[]',
-        'sectionCaption?': 'string',
-        'sectionDescription?': 'string',
-        'required?': 'string',
-        'example?': 'any'
-    });
     const jsDoc = symbol.getJsDocTags(checker);
     const collectedJsDoc = {};
     for (const tag of jsDoc) {
@@ -75,48 +82,42 @@ function convertJSDocToSchema(checker, symbol) {
             collectedJsDoc[tag.name] = tag.text[0].text.replace(/"/g, '').trim();
         }
     }
-    const { data: validatedJsDoc, problems } = JSDocInfoValidator(collectedJsDoc);
-    if (problems) {
-        console.warn(problems);
+    const validatedJsDoc = JSDocPropertyInfoSchema(collectedJsDoc);
+    if (validatedJsDoc instanceof type.errors) {
+        console.warn(validatedJsDoc.summary);
+        process.exit(1);
     }
-    if (!description)
-        validatedJsDoc.description = '';
-    return {
-        ...validatedJsDoc,
-    };
+    if (!validatedJsDoc.description)
+        validatedJsDoc.description = "";
+    return validatedJsDoc;
 }
-function convertPrimitiveToSchema(checker, type, doc) {
+function convertPrimitiveToSchema(_checker, type, doc) {
     if (type.flags & ts.TypeFlags.String) {
         return {
             ...doc,
             type: 'string',
-            editor: doc.editor || 'textfield',
         };
     }
     if (type.flags & ts.TypeFlags.Number) {
         return {
             ...doc,
             type: 'integer',
-            editor: doc.editor || 'number',
         };
     }
     if (type.flags & ts.TypeFlags.Boolean) {
         return {
             ...doc,
             type: 'boolean',
-            editor: doc.editor || 'checkmark',
         };
     }
     return {
         ...doc,
         type: 'string',
-        editor: doc.editor || 'textfield',
     };
 }
-function convertArrayToSchema(checker, array, doc) {
+function convertArrayToSchema(_checker, _array, doc) {
     return {
         type: 'array',
-        editor: 'textfield',
         ...doc,
         uniqueItems: doc.uniqueItems && eval(doc.uniqueItems)
     };
@@ -140,13 +141,13 @@ function convertObjectToSchema(checker, object, doc, propertyPath) {
     }
     return {
         type: 'object',
-        editor: 'textfield',
         properties: schema,
         ...doc,
         required,
     };
 }
 function convertTypeToSchema(checker, type, doc, propertyPath) {
+    doc.description ??= "";
     if (type.flags & ts.TypeFlags.Enum
         || type.flags & ts.TypeFlags.EnumLike
         || type.flags & ts.TypeFlags.EnumLiteral
@@ -179,7 +180,7 @@ export function convertJsDoccableToString(value, required, level = 0) {
             continue;
         if (jsDoccableName === 'properties')
             continue;
-        if (jsDoccableName !== 'required' && jsDoccableValue === '')
+        if (jsDoccableName === 'description' && jsDoccableValue === '')
             continue;
         let formattedValue = jsDoccableValue;
         if (JSDOC_PROPS_TO_EVAL.includes(jsDoccableName)) {
@@ -189,7 +190,7 @@ export function convertJsDoccableToString(value, required, level = 0) {
             else if (!required && jsDoccableName === 'required') {
                 continue;
             }
-            else if (value.type === 'string' && ["default", "prefill"].includes(jsDoccableName)) {
+            else if (value.type === 'string' && ["default", "prefill", "example"].includes(jsDoccableName)) {
                 formattedValue = `"${formattedValue}"`;
             }
             else {
@@ -291,7 +292,7 @@ export function getSchemaFromSourcePathMultiple(sourcePath, inputFileName, ignor
         .map((inputNode) => convertInputIntoSchema(checker, inputNode))
         .map((schema) => cleanUpSchema(schema));
 }
-function getDefaultsFromInputAssign(checker, sourceFile, typeName) {
+function getDefaultsFromInputAssign(_checker, sourceFile, typeName) {
     let inputNode;
     let inputDefaults;
     for (const child of sourceFile.statements) {
@@ -301,6 +302,7 @@ function getDefaultsFromInputAssign(checker, sourceFile, typeName) {
         const { initializer } = resultVD;
         if (!initializer)
             continue;
+        // @ts-ignore
         if (initializer.name.escapedText !== typeName && initialized.name.escapedText !== typeName)
             continue;
         const defaults = findSyntaxKind(child, ts.SyntaxKind.ObjectBindingPattern);
@@ -318,6 +320,7 @@ function getDefaultsFromInputAssign(checker, sourceFile, typeName) {
             }
             if (!found)
                 continue;
+            // @ts-ignore
             if (found.name.escapedText !== typeName)
                 continue;
             if (found) {
@@ -328,7 +331,7 @@ function getDefaultsFromInputAssign(checker, sourceFile, typeName) {
     }
     return { inputNode, inputDefaults };
 }
-function getDefaultsFromInputAssignMultiple(checker, sourceFile, ignoreTypeName, pattern) {
+function getDefaultsFromInputAssignMultiple(_checker, sourceFile, ignoreTypeName, pattern) {
     const alreadyProcessed = [];
     const inputNodes = [];
     for (const child of sourceFile.statements) {
@@ -339,10 +342,13 @@ function getDefaultsFromInputAssignMultiple(checker, sourceFile, ignoreTypeName,
         }
         if (!found)
             continue;
+        // @ts-ignore
         if (!refreshedPattern.test(found.name.escapedText) && !alreadyProcessed.includes(found.name.escapedText))
             continue;
+        // @ts-ignore
         if (found.name.escapedText === ignoreTypeName)
             continue;
+        // @ts-ignore
         alreadyProcessed.push(found.name.escapedText);
         inputNodes.push(found);
     }
@@ -366,7 +372,12 @@ function cleanUpSchema(unorderedSchema) {
         }
     }
     if (schema.get('type') !== 'object') {
-        schema.set('required', undefined);
+        schema.delete('required');
+    }
+    for (const key of schema.keys()) {
+        if (schema.get(key) === undefined) {
+            schema.delete(key);
+        }
     }
     return Object.fromEntries(schema);
 }
