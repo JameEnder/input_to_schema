@@ -352,9 +352,10 @@ function cleanUpSchema(unorderedSchema) {
     const schema = new Map();
     schema.set('title', unorderedSchema.title);
     schema.set('type', unorderedSchema.type);
+    schema.set('description', unorderedSchema.description);
     schema.set('editor', unorderedSchema.editor);
     for (const key of Object.keys(unorderedSchema)) {
-        if (['title', 'type', 'editor'].includes(key))
+        if (['title', 'type', 'editor', 'description'].includes(key))
             continue;
         schema.set(key, unorderedSchema[key]);
     }
